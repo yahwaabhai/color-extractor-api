@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from sklearn.cluster import KMeans
 from flask import Flask, request, jsonify
-import colorsys # Used for easy RGB to HSV conversion
+import colorsys
 
 # --- Initialize the Flask App ---
 app = Flask(__name__)
@@ -10,7 +10,6 @@ app = Flask(__name__)
 # --- Helper Functions for Color Analysis ---
 
 def get_luminance(rgb):
-    # Standard formula for relative luminance
     r, g, b = [x / 255.0 for x in rgb]
     r = (r / 12.92) if (r <= 0.03928) else ((r + 0.055) / 1.055) ** 2.4
     g = (g / 12.92) if (g <= 0.03928) else ((g + 0.055) / 1.055) ** 2.4
@@ -24,10 +23,8 @@ def get_contrast_ratio(color1_rgb, color2_rgb):
     return (light_lum + 0.05) / (dark_lum + 0.05)
 
 def get_image_palette(image_data, n_colors=8):
-    # Decode the image from the memory buffer and convert to RGB
     image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
     pixels = image_rgb.reshape((-1, 3))
     
     kmeans = KMeans(n_clusters=n_colors, n_init='auto', random_state=42)
@@ -41,28 +38,31 @@ def get_image_palette(image_data, n_colors=8):
     return palette
 
 def find_best_color(palette):
-    """
-    New logic: Find the best color based on vibrancy (saturation) and rarity.
-    """
-    overlay_bg = [40, 40, 40]  # Dark grey background for contrast check
+    overlay_bg = [40, 40, 40]
     candidates = []
 
     for color, percentage in palette:
-        # Convert RGB to HSV to check for saturation and brightness (value)
         r, g, b = [x / 255.0 for x in color]
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
-
         contrast = get_contrast_ratio(color, overlay_bg)
 
-        # --- Filtering Criteria ---
-        # We've increased the thresholds to demand more vibrant and brighter colors!
         if s > 0.65 and v > 0.65 and contrast > 4.5:
-            candidates.append({'color': color, 'percentage': percentage, 'saturation': s})
+            candidates.append({'color': color, 'percentage': percentage, 'hue': h})
             
     if candidates:
-        # Sort the vibrant candidates by how rare they are
         best_candidate = sorted(candidates, key=lambda x: x['percentage'])[0]
-        return best_candidate['color']
+        
+        # --- NEW "VIVID BOOST" LOGIC ---
+        # Take the hue of the chosen color
+        h = best_candidate['hue']
+        # Force saturation and value to maximum for ultimate vibrancy
+        s = 1.0
+        v = 1.0
+        # Convert the boosted HSV color back to RGB
+        boosted_rgb_float = colorsys.hsv_to_rgb(h, s, v)
+        # Scale it back to 0-255 and convert to integer
+        final_color = [int(x * 255) for x in boosted_rgb_float]
+        return final_color
     
     # --- Fallback Logic ---
     brightest_fallback = None
