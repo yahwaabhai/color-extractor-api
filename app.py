@@ -79,51 +79,46 @@ def extract_color():
     }
     return jsonify(result)
 
-# --- FINAL UPDATED IMAGE EDITOR ENDPOINT ---
+# --- FINAL CORRECTED IMAGE EDITOR ENDPOINT ---
 @app.route('/add_headline', methods=['POST'])
 def add_headline():
-    # 1. Get data from the request
     if 'file' not in request.files:
         return "Missing image file", 400
     
     image_file = request.files['file']
+    
+    # --- FIX: Read the image into a memory buffer ONCE ---
+    image_data = io.BytesIO(image_file.read())
+
+    # Now use the memory buffer for all operations
+    with Image.open(image_data) as base_image_for_size:
+        width, height = base_image_for_size.size
+
     headline_text = request.form.get('headline_text', 'Default Headline')
     subtitle_text = request.form.get('subtitle_text', 'Default Subtitle')
     headline_color = request.form.get('headline_color', '#FFFFFF')
-
-    # --- NEW: Get separate font options for headline and subtitle ---
     headline_font_family = request.form.get('headline_font_family', 'Inter-Bold.ttf')
     subtitle_font_family = request.form.get('subtitle_font_family', 'Inter-Bold.ttf')
-    
-    # Get image dimensions to calculate default font sizes
-    base_image_for_size = Image.open(image_file.stream)
-    width, height = base_image_for_size.size
-    
     headline_font_size = int(request.form.get('headline_font_size', int(height / 18)))
     subtitle_font_size = int(request.form.get('subtitle_font_size', int(height / 35)))
-    base_image_for_size.close()
     
-    # 2. Open the base image again for processing
-    image_file.seek(0)
-    base_image = Image.open(image_file.stream).convert("RGBA")
+    # --- FIX: Rewind the memory buffer before reading it again ---
+    image_data.seek(0)
+    base_image = Image.open(image_data).convert("RGBA")
     
-    # 3. Create and paste the overlay
+    # Create and paste the overlay
     overlay_height = int(height * 0.25)
     overlay = Image.new('RGBA', (width, overlay_height), (0, 0, 0, 128))
     base_image.paste(overlay, (0, height - overlay_height), overlay)
     
-    # 5. Prepare to draw text
     draw = ImageDraw.Draw(base_image)
     
-    # --- NEW: Use separate font variables ---
     try:
         headline_font = ImageFont.truetype(headline_font_family, size=headline_font_size)
         subtitle_font = ImageFont.truetype(subtitle_font_family, size=subtitle_font_size)
     except IOError as e:
-        # Give a more specific error message
         return f"Error loading font file: {e}. Make sure the font file is uploaded to your project.", 500
 
-    # 6. Draw the text
     padding = int(width * 0.05)
     subtitle_y = height - padding - subtitle_font_size
     draw.text((padding, subtitle_y), subtitle_text, font=subtitle_font, fill="#FFFFFF")
@@ -131,7 +126,6 @@ def add_headline():
     headline_y = subtitle_y - headline_font_size - (padding / 4)
     draw.text((padding, headline_y), headline_text, font=headline_font, fill=headline_color)
 
-    # 7. Save and return the final image
     img_io = io.BytesIO()
     base_image.save(img_io, 'PNG')
     img_io.seek(0)
