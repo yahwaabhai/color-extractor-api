@@ -49,30 +49,22 @@ def find_best_color(palette):
 
     for color, percentage in palette:
         # Convert RGB to HSV to check for saturation and brightness (value)
-        # We normalize to 0-1 for colorsys
         r, g, b = [x / 255.0 for x in color]
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
 
-        # Calculate contrast against the dark overlay
         contrast = get_contrast_ratio(color, overlay_bg)
 
         # --- Filtering Criteria ---
-        # 1. Must be saturated enough (not grey)
-        # 2. Must be bright enough (not black)
-        # 3. Must have sufficient contrast for readability
-        if s > 0.4 and v > 0.4 and contrast > 4.5:
+        # We've increased the thresholds to demand more vibrant and brighter colors!
+        if s > 0.65 and v > 0.65 and contrast > 4.5:
             candidates.append({'color': color, 'percentage': percentage, 'saturation': s})
             
-    # If we found any vibrant candidates
     if candidates:
-        # Sort the vibrant candidates by how rare they are in the image
-        # The rarest, vibrant color is our best choice
+        # Sort the vibrant candidates by how rare they are
         best_candidate = sorted(candidates, key=lambda x: x['percentage'])[0]
         return best_candidate['color']
     
     # --- Fallback Logic ---
-    # If no vibrant colors are found (e.g., a black & white image),
-    # find the brightest color from the original palette that has good contrast.
     brightest_fallback = None
     max_luminance = 0
     for color, percentage in palette:
@@ -82,7 +74,7 @@ def find_best_color(palette):
                 max_luminance = lum
                 brightest_fallback = color
     
-    return brightest_fallback if brightest_fallback else [255, 255, 255] # Default to white if all else fails
+    return brightest_fallback if brightest_fallback else [255, 255, 255]
 
 # --- The Main API Endpoint ---
 @app.route('/extract_color', methods=['POST'])
@@ -108,5 +100,4 @@ def extract_color():
 
 # --- Run the App ---
 if __name__ == '__main__':
-    # Make sure to change the port if 5000 is still in use by AirPlay
     app.run(host='0.0.0.0', port=5001)
