@@ -9,7 +9,7 @@ import io
 # --- Initialize the Flask App ---
 app = Flask(__name__)
 
-# --- Helper Functions (No changes here) ---
+# --- Helper Functions ---
 def get_luminance(rgb):
     r, g, b = [x / 255.0 for x in rgb]
     r = (r / 12.92) if (r <= 0.03928) else ((r + 0.055) / 1.055) ** 2.4
@@ -30,85 +30,163 @@ def get_image_palette(image_data, n_colors=8):
     kmeans = KMeans(n_clusters=n_colors, n_init='auto', random_state=42)
     kmeans.fit(pixels)
     colors = kmeans.cluster_centers_.astype(int)
-    counts = np.bincount(kmeans.labels_)
-    percentages = (counts / len(pixels)) * 100
-    palette = list(zip(colors.tolist(), percentages.tolist()))
-    return palette
+    return colors.tolist()
 
-def find_best_color(palette):
-    overlay_bg = [40, 40, 40]
-    candidates = []
-    for color, percentage in palette:
+# --- NEW: Helper function to get the average color of the text background area ---
+def get_background_color(image_data):
+    image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+    height, _, _ = image.shape
+    
+    # Define the area where the text will be placed (bottom 25%)
+    top_crop = int(height * 0.75)
+    bottom_area = image[top_crop:height, :]
+    
+    # Calculate the average color of this area
+    avg_color = np.mean(bottom_area, axis=(0, 1))
+    return avg_color.astype(int).tolist()
+
+# --- NEW: Revamped "smart" function to find the best headline color ---
+def find_best_headline_color(full_palette, background_color):
+    vibrant_candidates = []
+    # First, find all the vibrant colors in the image
+    for color in full_palette:
         r, g, b = [x / 255.0 for x in color]
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
-        contrast = get_contrast_ratio(color, overlay_bg)
-        if s > 0.65 and v > 0.65 and contrast > 4.5:
-            candidates.append({'color': color, 'percentage': percentage, 'hue': h})
-    if candidates:
-        best_candidate = sorted(candidates, key=lambda x: x['percentage'])[0]
-        h = best_candidate['hue']
-        s, v = 1.0, 1.0
-        boosted_rgb_float = colorsys.hsv_to_rgb(h, s, v)
-        final_color = [int(x * 255) for x in boosted_rgb_float]
-        return final_color
-    brightest_fallback = None
-    max_luminance = 0
-    for color, percentage in palette:
-        if get_contrast_ratio(color, overlay_bg) > 4.5:
-            lum = get_luminance(color)
-            if lum > max_luminance:
-                max_luminance = lum
-                brightest_fallback = color
-    return brightest_fallback if brightest_fallback else [255, 255, 255]
+        if s > 0.5 and v > 0.5: # Find appealing, vibrant colors
+            vibrant_candidates.append(color)
 
-# --- Existing API Endpoint ---
+    if not vibrant_candidates:
+        # If no vibrant colors, use the original palette
+        vibrant_candidates = full_palette
+
+    # Now, find which candidate has the best contrast against the actual background
+    best_color = None
+    max_contrast = 0
+    for candidate_color in vibrant_candidates:
+        contrast = get_contrast_ratio(candidate_color, background_color)
+        if contrast > max_contrast:
+            max_contrast = contrast
+            best_color = candidate_color
+            
+    # Fallback to white if no good contrast color is found
+    if max_contrast < 4.5:
+        return [255, 255, 255]
+
+    # Boost the final chosen color for maximum impact
+    r, g, b = [x / 255.0 for x in best_color]
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    boosted_rgb = colorsys.hsv_to_rgb(h, 1.0, 1.0) # Full saturation and brightness
+    return [int(x * 255) for x in boosted_rgb]
+
+def get_dominant_border_color(image_data, border_percent=0.10, n_clusters=5):
+    # This function remains for the banner color
+    image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    height, width, _ = image_rgb.shape
+    h_border = int(height * border_percent)
+    w_border = int(width * border_percent)
+    top_border = image_rgb[0:h_border, :]
+    bottom_border = image_rgb[height-h_border:height, :]
+    left_border = image_rgb[:, 0:w_border]
+    right_border = image_rgb[:, width-w_border:width]
+    border_pixels = np.concatenate([
+        top_border.reshape(-1, 3), bottom_border.reshape(-1, 3),
+        left_border.reshape(-1, 3), right_border.reshape(-1, 3)
+    ])
+    kmeans = KMeans(n_clusters=n_clusters, n_init='auto', random_state=42)
+    kmeans.fit(border_pixels)
+    counts = np.bincount(kmeans.labels_)
+    dominant_color = kmeans.cluster_centers_[np.argmax(counts)]
+    return dominant_color.astype(int).tolist()
+
+# --- UPDATED API ENDPOINT ---
 @app.route('/extract_color', methods=['POST'])
 def extract_color():
-    # ... (This function is unchanged) ...
     if 'file' not in request.files:
         return jsonify({"error": "No file part in the request"}), 400
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
+    
     image_bytes = np.fromfile(file, np.uint8)
-    palette = get_image_palette(image_bytes)
-    best_color = find_best_color(palette)
+    
+    # 1. Get the palette from the whole image
+    full_palette = get_image_palette(image_bytes)
+    
+    # 2. Get the average color of the text background area
+    background_color = get_background_color(image_bytes)
+    
+    # 3. Find the best headline color using the new smart logic
+    headline_color_rgb = find_best_headline_color(full_palette, background_color)
+    
+    # 4. Find the dominant border color for the banner
+    border_color_rgb = get_dominant_border_color(image_bytes)
+
+    # 5. Build the JSON response
     result = {
-        "rgb": f"rgb({best_color[0]}, {best_color[1]}, {best_color[2]})",
-        "hex": '#{:02x}{:02x}{:02x}'.format(best_color[0], best_color[1], best_color[2])
+        "headline_color": {
+            "rgb": f"rgb({headline_color_rgb[0]}, {headline_color_rgb[1]}, {headline_color_rgb[2]})",
+            "hex": '#{:02x}{:02x}{:02x}'.format(headline_color_rgb[0], headline_color_rgb[1], headline_color_rgb[2])
+        },
+        "dominant_background_color": {
+            "rgb": f"rgb({border_color_rgb[0]}, {border_color_rgb[1]}, {border_color_rgb[2]})",
+            "hex": '#{:02x}{:02x}{:02x}'.format(border_color_rgb[0], border_color_rgb[1], border_color_rgb[2])
+        }
     }
     return jsonify(result)
 
-# --- FINAL CORRECTED IMAGE EDITOR ENDPOINT ---
+# --- Image Editor Endpoint (No changes here) ---
 @app.route('/add_headline', methods=['POST'])
 def add_headline():
+    # ... (This function is unchanged) ...
+    # ... (The rest of the file is the same) ...
     if 'file' not in request.files:
         return "Missing image file", 400
     
     image_file = request.files['file']
-    
-    # --- FIX: Read the image into a memory buffer ONCE ---
     image_data = io.BytesIO(image_file.read())
 
-    # Now use the memory buffer for all operations
-    with Image.open(image_data) as base_image_for_size:
-        width, height = base_image_for_size.size
+    with Image.open(image_data) as img:
+        width, height = img.size
 
     headline_text = request.form.get('headline_text', 'Default Headline')
     subtitle_text = request.form.get('subtitle_text', 'Default Subtitle')
     headline_color = request.form.get('headline_color', '#FFFFFF')
+    if not headline_color.startswith('#'):
+        headline_color = '#' + headline_color
+    
     headline_font_family = request.form.get('headline_font_family', 'Inter-Bold.ttf')
     subtitle_font_family = request.form.get('subtitle_font_family', 'Inter-Bold.ttf')
     headline_font_size = int(request.form.get('headline_font_size', int(height / 18)))
     subtitle_font_size = int(request.form.get('subtitle_font_size', int(height / 35)))
+
+    overlay_color_str = request.form.get('overlay_color_rgb', '0,0,0')
+    try:
+        color_parts = overlay_color_str.split(',')
+        if len(color_parts) == 3:
+            r, g, b = map(int, color_parts)
+        else:
+            r, g, b = 0, 0, 0
+    except (ValueError, TypeError):
+        r, g, b = 0, 0, 0
+
+    overlay_alpha = int(request.form.get('overlay_alpha', '128'))
+    final_overlay_color = (r, g, b, overlay_alpha)
+
+    padding = int(width * 0.05)
+    default_subtitle_y = height - padding - subtitle_font_size
+    default_headline_y = default_subtitle_y - headline_font_size - (padding / 4)
+
+    headline_x = int(request.form.get('headline_x', padding))
+    headline_y = int(request.form.get('headline_y', default_headline_y))
+    subtitle_x = int(request.form.get('subtitle_x', padding))
+    subtitle_y = int(request.form.get('subtitle_y', default_subtitle_y))
     
-    # --- FIX: Rewind the memory buffer before reading it again ---
     image_data.seek(0)
     base_image = Image.open(image_data).convert("RGBA")
     
-    # Create and paste the overlay
     overlay_height = int(height * 0.25)
-    overlay = Image.new('RGBA', (width, overlay_height), (0, 0, 0, 128))
+    overlay = Image.new('RGBA', (width, overlay_height), final_overlay_color)
     base_image.paste(overlay, (0, height - overlay_height), overlay)
     
     draw = ImageDraw.Draw(base_image)
@@ -117,14 +195,10 @@ def add_headline():
         headline_font = ImageFont.truetype(headline_font_family, size=headline_font_size)
         subtitle_font = ImageFont.truetype(subtitle_font_family, size=subtitle_font_size)
     except IOError as e:
-        return f"Error loading font file: {e}. Make sure the font file is uploaded to your project.", 500
+        return f"Error loading font file: {e}. Make sure the font file is uploaded.", 500
 
-    padding = int(width * 0.05)
-    subtitle_y = height - padding - subtitle_font_size
-    draw.text((padding, subtitle_y), subtitle_text, font=subtitle_font, fill="#FFFFFF")
-    
-    headline_y = subtitle_y - headline_font_size - (padding / 4)
-    draw.text((padding, headline_y), headline_text, font=headline_font, fill=headline_color)
+    draw.text((subtitle_x, subtitle_y), subtitle_text, font=subtitle_font, fill="#FFFFFF")
+    draw.text((headline_x, headline_y), headline_text, font=headline_font, fill=headline_color)
 
     img_io = io.BytesIO()
     base_image.save(img_io, 'PNG')
